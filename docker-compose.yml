@@ -1,0 +1,58 @@
+# CyberGuard Phase 1: traffic-processing harness.
+# Three proxy instances (blocking / detect-only / off) front ONE origin so identical
+# requests can be compared across modes. Per-site switching is Phase 2 (docker-compose.phase2.yml).
+
+x-waf-env: &waf-env
+  PROXY: "1"
+  BACKEND: "http://origin:5000"
+  SERVER_NAME: "localhost"
+  PORT: "8080"
+  PARANOIA: "${PARANOIA:-1}"
+  BLOCKING_PARANOIA: "${PARANOIA:-1}"
+  ANOMALY_INBOUND: "${ANOMALY_INBOUND:-5}"
+  ANOMALY_OUTBOUND: "4"
+  MODSEC_AUDIT_ENGINE: "On"            # log every transaction in the test harness (too verbose for prod)
+  MODSEC_AUDIT_LOG_FORMAT: "JSON"
+  MODSEC_AUDIT_LOG_TYPE: "Serial"
+
+x-waf: &waf
+  image: ${CRS_IMAGE}
+  restart: unless-stopped
+  depends_on: [origin]
+  networks: [backend, edge]
+
+services:
+  origin:
+    build: ./origin
+    restart: unless-stopped
+    networks: [backend]            # internal-only network, NO published ports (asserted in tests)
+    volumes: [originlog:/data]
+
+  proxy-blocking:
+    <<: *waf
+    ports: ["127.0.0.1:${PORT_BLOCKING:-8081}:8080"]
+    environment:
+      <<: *waf-env
+      MODSEC_RULE_ENGINE: "On"
+
+  proxy-detect:
+    <<: *waf
+    ports: ["127.0.0.1:${PORT_DETECT:-8082}:8080"]
+    environment:
+      <<: *waf-env
+      MODSEC_RULE_ENGINE: "DetectionOnly"
+
+  proxy-off:
+    <<: *waf
+    ports: ["127.0.0.1:${PORT_OFF:-8083}:8080"]
+    environment:
+      <<: *waf-env
+      MODSEC_RULE_ENGINE: "Off"
+
+networks:
+  backend:
+    internal: true                 # no route to/from the host or internet
+  edge: {}
+
+volumes:
+  originlog: {}

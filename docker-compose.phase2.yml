@@ -1,0 +1,58 @@
+# Phase 2: ONE multi-site proxy whose per-site mode is generated and applied by the controller.
+# No Docker socket is mounted anywhere. Run Phase 1 tests first (separate compose file).
+name: cyberguard-p2
+services:
+  origin:
+    build: ./origin
+    networks: [backend]            # no published ports
+  proxy:
+    build: {context: ./proxy, args: {CRS_IMAGE: "${CRS_IMAGE}"}}
+    depends_on: [origin]
+    environment:
+      PROXY: "1"
+      BACKEND: "http://127.0.0.1:1"   # image's own default vhost (port 8080, unpublished) must not reach the origin
+      PORT: "8080"
+      MODSEC_AUDIT_ENGINE: "RelevantOnly"
+      MODSEC_AUDIT_LOG_FORMAT: "JSON"
+      MODSEC_AUDIT_LOG: "/var/log/modsec_audit.log"   # agent ships this file; must match CG_AUDIT_SRC
+      MODSEC_AUDIT_LOG_PARTS: "ABIJDEFHZ"             # no request body (C) on purpose
+      CG_AUDIT_SRC: "/var/log/modsec_audit.log"
+    ports: ["127.0.0.1:8000:8000", "127.0.0.1:8443:8443"]    # HTTP and HTTPS; state listener :9000 deliberately NOT published
+    volumes:
+      - cgshared:/etc/cyberguard
+      - ./proxy/00-cyberguard.conf:/etc/nginx/conf.d/00-cyberguard.conf:ro
+    networks: [backend, edge]
+  app:                                  # management plane: API + dashboard (no Docker socket)
+    build: {context: ., dockerfile: deploy/app.Dockerfile}
+    depends_on: [proxy, mailpit]
+    environment:
+      CG_SECRET_KEY: "${CG_SECRET_KEY:?set CG_SECRET_KEY in .env}"
+      CG_ADMIN_EMAIL: "${CG_ADMIN_EMAIL:?set CG_ADMIN_EMAIL in .env}"
+      CG_ADMIN_PASSWORD: "${CG_ADMIN_PASSWORD:?set CG_ADMIN_PASSWORD in .env}"
+      CG_COOKIE_SECURE: "${CG_COOKIE_SECURE:-true}"
+      CG_ROOT: /etc/cyberguard
+      CG_DB: /var/lib/cyberguard/state.db
+      CG_ALLOWED_ORIGIN_HOSTS: origin   # explicit admin allowance for the bundled test origin
+      CG_STATE_URL: http://proxy:9000
+      CG_LOG_DIR: /etc/cyberguard/logs
+      CG_PUBLIC_HTTPS_URL: https://proxy:8443
+      CG_PUBLIC_HTTPS_PORT: "8443"          # port used in http->https redirects (use 443 in production)
+      CG_TRUSTED_PROXIES: "${CG_TRUSTED_PROXIES:-}"   # comma-separated CIDRs of YOUR load balancer/TLS terminator, if any
+      CG_SMTP_HOST: "${CG_SMTP_HOST:-mailpit}"        # default: the bundled local inbox at http://127.0.0.1:8025
+      CG_SMTP_PORT: "${CG_SMTP_PORT:-1025}"
+      CG_SMTP_FROM: "${CG_SMTP_FROM:-cyberguard@localhost}"
+      CG_SMTP_STARTTLS: "${CG_SMTP_STARTTLS:-false}"
+      CG_SMTP_USER: "${CG_SMTP_USER:-}"
+      CG_SMTP_PASSWORD: "${CG_SMTP_PASSWORD:-}"
+      CG_PUBLIC_URL: http://proxy:8000
+    ports: ["127.0.0.1:8088:5000"]      # dashboard: http://127.0.0.1:8088 (local only; put TLS in front for real use)
+    volumes: [cgshared:/etc/cyberguard, cgdata:/var/lib/cyberguard]
+    networks: [backend, edge]
+  mailpit:                              # local test inbox so you can SEE alert emails; replace with real SMTP for production
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}   # pin an exact tag in .env for anything beyond local testing
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [backend, edge]
+networks:
+  backend: {internal: true}
+  edge: {}
+volumes: {cgshared: {}, cgdata: {}}
